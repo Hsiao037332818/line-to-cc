@@ -1,7 +1,33 @@
 const PUSH_API_URL = 'https://api.line.me/v2/bot/message/push'
 const WEBHOOK_ENDPOINT_URL = 'https://api.line.me/v2/bot/channel/webhook/endpoint'
 const WEBHOOK_TEST_URL = 'https://api.line.me/v2/bot/channel/webhook/test'
+// 重要：媒體下載的 host 是 api-data.line.me，不是 api.line.me
+const CONTENT_API_BASE = 'https://api-data.line.me/v2/bot/message'
 const MAX_TEXT_LENGTH = 5000
+
+// MIME → 副檔名對照表
+const MIME_TO_EXT: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'audio/mpeg': 'mp3',
+  'audio/x-m4a': 'm4a',
+  'audio/wav': 'wav',
+  'audio/aac': 'aac',
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
+}
 
 export function splitText(text: string, maxLength: number): string[] {
   if (text.length <= maxLength) return [text]
@@ -56,6 +82,40 @@ export function createLineClient(accessToken: string) {
     }
   }
 
+  // 下載媒體訊息原始 binary
+  async function getMessageContent(messageId: string): Promise<{
+    buffer: Buffer
+    contentType: string
+    ext: string
+  }> {
+    const url = `${CONTENT_API_BASE}/${messageId}/content`
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`Failed to download message ${messageId} (HTTP ${res.status}): ${body}`)
+    }
+    const contentType = res.headers.get('content-type') ?? 'application/octet-stream'
+    const buffer = Buffer.from(await res.arrayBuffer())
+    const cleanCT = contentType.split(';')[0]!.trim().toLowerCase()
+    const ext = MIME_TO_EXT[cleanCT] ?? cleanCT.split('/').pop()?.replace(/[^a-zA-Z0-9]/g, '') ?? 'bin'
+    return { buffer, contentType, ext }
+  }
+
+  // 下載外部 URL 的檔案（contentProvider.type === 'external'）
+  async function downloadExternalContent(url: string): Promise<{ buffer: Buffer; contentType: string; ext: string }> {
+    const res = await fetch(url)
+    if (!res.ok) {
+      throw new Error(`Failed to download external content (HTTP ${res.status})`)
+    }
+    const contentType = res.headers.get('content-type') ?? 'application/octet-stream'
+    const buffer = Buffer.from(await res.arrayBuffer())
+    const cleanCT = contentType.split(';')[0]!.trim().toLowerCase()
+    const ext = MIME_TO_EXT[cleanCT] ?? cleanCT.split('/').pop()?.replace(/[^a-zA-Z0-9]/g, '') ?? 'bin'
+    return { buffer, contentType, ext }
+  }
+
   async function setWebhookUrl(endpoint: string): Promise<boolean> {
     const res = await fetch(WEBHOOK_ENDPOINT_URL, {
       method: 'PUT',
@@ -101,7 +161,15 @@ export function createLineClient(accessToken: string) {
     return data
   }
 
-  return { pushMessage, pushRawMessages, setWebhookUrl, getWebhookUrl, testWebhook }
+  return {
+    pushMessage,
+    pushRawMessages,
+    getMessageContent,
+    downloadExternalContent,
+    setWebhookUrl,
+    getWebhookUrl,
+    testWebhook,
+  }
 }
 
 export type LineClient = ReturnType<typeof createLineClient>
